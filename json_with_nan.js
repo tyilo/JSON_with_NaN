@@ -1,53 +1,85 @@
 (function() {
     "use strict";
-    
-    JSON.stringifyWithNaN = function stringifyWithNaN(obj) {
-        switch(typeof obj) {
-            case 'boolean':
-                return obj.toString();
-            case 'number':
-                if(isFinite(obj)) {
-                    return obj.toString();
-                } else {
-                    return isNaN(obj)? 'NaN': obj === Infinity? 'Infinity': '-Infinity';
-                }
-            case 'string':
-                return encodeString(obj);
-            case 'object':
-                if(obj === null) {
-                    return 'null';
-                }
-                if(obj instanceof Array) {
-                    return '[' + obj.map(stringifyWithNaN).map(x => x === undefined? 'null': x).join(',') + ']';
-                }
-                if(obj instanceof Date) {
-                    return encodeString(obj.toJSON());
-                }
-                let result = '{';
-                let first = true;
-                for(let k in obj) {
-                    if(obj.hasOwnProperty(k)) {
-                        let v = stringifyWithNaN(obj[k]);
-                        if(v === undefined) {
-                            continue;
-                        }
-                        if(first) {
-                            first = false;
-                        } else {
-                            result += ',';
-                        }
-                        result += encodeString(k) + ':' + v;
-                    }
-                }
-                result += '}';
-                return result;
-            case 'undefined':
-            case 'symbol':
-            case 'function':
-            default:
-                return undefined;
+
+    JSON.stringifyWithNaN = function(obj, replacer, space) {
+        let indentStr = '';
+        if(typeof space === 'number') {
+            for(var i = 0; i < Math.min(space, 10); i++) {
+                indentStr += ' ';
+            }
+        } else if(typeof space === 'string') {
+            indentStr = space.substr(0, 10);
         }
-        
+
+        let shouldIndent = indentStr.length > 0;
+        let spaceStr = shouldIndent? ' ': '';
+
+        return stringifyWithNaNWrapper(obj, '', shouldIndent? '\n': '');
+
+        function stringifyWithNaNWrapper(obj, key, indentation) {
+            if(typeof replacer === 'function') {
+                obj = replacer(key, obj);
+            }
+            switch(typeof obj) {
+                case 'boolean':
+                    return obj.toString();
+                case 'number':
+                    if(isFinite(obj)) {
+                        return obj.toString();
+                    } else {
+                        return isNaN(obj)? 'NaN': obj === Infinity? 'Infinity': '-Infinity';
+                    }
+                case 'string':
+                    return encodeString(obj);
+                case 'object':
+                    if(obj === null) {
+                        return 'null';
+                    }
+                    if(obj instanceof Array) {
+                        let inner = obj.map((x, i) => stringifyWithNaNWrapper(x, i, indentation + indentStr)).map(x => x === undefined? 'null': x).join(',' + indentation);
+                        if(obj.length === 0) {
+                            indentation = '';
+                        }
+                        return '[' + indentation + inner + indentation + ']';
+                    }
+                    if(obj instanceof Date) {
+                        return encodeString(obj.toJSON());
+                    }
+                    let result = '{';
+                    let first = true;
+                    for(let k in obj) {
+                        if(obj.hasOwnProperty(k)) {
+                            if(replacer instanceof Array) {
+                                if(replacer.indexOf(k) === -1) {
+                                    continue;
+                                }
+                            }
+                            let v = stringifyWithNaNWrapper(obj[k], key, indentation + indentStr);
+                            if(v === undefined) {
+                                continue;
+                            }
+                            if(first) {
+                                first = false;
+                                result += indentation + indentStr;
+                            } else {
+                                result += ',' + indentation + indentStr;
+                            }
+                            result += encodeString(k) + ':' + spaceStr + v;
+                        }
+                    }
+                    if(first) {
+                        indentation = '';
+                    }
+                    result += indentation + '}';
+                    return result;
+                case 'undefined':
+                case 'symbol':
+                case 'function':
+                default:
+                    return undefined;
+            }
+        }
+
         function encodeString(str) {
             return '"' + str.replace(/("|\\)/g, '\\$1') + '"';
         }
@@ -65,37 +97,37 @@
         'r': '\r',
         't': '\t'
     };
-    
-    JSON.parseWithNaN = function (str) {
-        let ret = parseWithNaNWrapper(str, 0);
+
+    JSON.parseWithNaN = function(str, reviver) {
+        let ret = parseWithNaNWrapper(str, 0, '');
         let i = ret[0];
         let result = ret[1];
-        
+
         i = skipWhiteSpace(str, i);
         if(i !== str.length) {
             assertToken(str, i);
         }
-    
+
         return result;
-        
+
         function assert(p, err) {
             if(!p) {
                 throw new SyntaxError(err);
             }
             return true;
         }
-        
+
         function assertNotAtEnd(str, i) {
             assert(i < str.length, 'Unexpected end of input');
             return true;
         }
-        
+
         function assertToken(str, i, token) {
             assertNotAtEnd(str, i);
             assert(str[i] === token, 'Unexpected token: ' + str[i]);
             return true;
         }
-        
+
         function digitFromChar(c, hex) {
             c = c.toLowerCase();
             if('0' <= c && c <= '9') {
@@ -106,30 +138,41 @@
                 return false;
             }
         }
-        
-        function parseWithNaNWrapper(str, i) {
+
+        function parseWithNaNWrapper(str, i, key) {
             i = skipWhiteSpace(str, i);
-            
+
             assertNotAtEnd(str, i);
-            
+
+            let ret;
+
             let matchedValues = values.filter(x => str.substr(i).indexOf(String(x)) === 0);
             if(matchedValues.length === 1) {
                 let val = matchedValues[0];
-                return [i + String(val).length, val];
+                ret = [i + String(val).length, val];
+            } else {
+                switch(str[i]) {
+                    case '"':
+                        ret = parseString(str, i);
+                        break;
+                    case '[':
+                        ret = parseArray(str, i);
+                        break;
+                    case '{':
+                        ret = parseObject(str, i);
+                        break;
+                    default: // number or invalid
+                        ret = parseNumber(str, i);
+                }
             }
-            
-            switch(str[i]) {
-                case '"':
-                    return parseString(str, i);
-                case '[':
-                    return parseArray(str, i);
-                case '{':
-                    return parseObject(str, i);
-                default: // number or invalid
-                    return parseNumber(str, i);
+
+            if(reviver) {
+                ret[1] = reviver(key, ret[1]);
             }
+
+            return ret;
         }
-        
+
         function isWhiteSpace(c) {
             switch(c) {
                 case ' ':
@@ -143,17 +186,17 @@
                     return false;
             }
         }
-        
+
         function skipWhiteSpace(str, i) {
             for(; i < str.length && isWhiteSpace(str[i]); i++);
             return i;
         }
-        
+
         function parseString(str, i) {
             i = skipWhiteSpace(str, i);
-            
+
             assertToken(str, i, '"');
-            
+
             let result = '';
             for(i++; assertNotAtEnd(str, i); i++) {
                 if(str[i] === '"') {
@@ -162,7 +205,7 @@
                 } else if(str[i] === '\\') {
                     i++;
                     assertNotAtEnd(str, i);
-                    
+
                     let v = unescapeMap[str[i]];
                     if(v) {
                         result += v;
@@ -173,7 +216,7 @@
                             i++;
                             for(let j = 0; j < 4; i++, j++) {
                                 num *= 16;
-                                
+
                                 let d = digitFromChar(str[i], true);
                                 if(d === false) {
                                     assertToken(str, i);
@@ -189,7 +232,7 @@
                     result += str[i];
                 }
             }
-            
+
             return [i, result];
         }
 
@@ -273,7 +316,7 @@
             assertToken(str, i, startToken);
             i++;
 
-            let first = true;
+            let index = 0;
             while(true) {
                 i = skipWhiteSpace(str, i);
                 assertNotAtEnd(str, i);
@@ -283,22 +326,22 @@
                     break;
                 }
 
-                if(first) {
-                    first = false;
-                } else {
+                if(index > 0) {
                     assertToken(str, i, ',');
                     i++;
                 }
 
-                i = parseItem(str, i, data);
+                i = parseItem(str, i, data, index);
+
+                index++;
             }
 
             return [i, data];
         }
 
         function parseArray(str, i) {
-            return parseContainer(str, i, '[', ']', [], function(str, i, data) {
-                let ret = parseWithNaNWrapper(str, i);
+            return parseContainer(str, i, '[', ']', [], function(str, i, data, index) {
+                let ret = parseWithNaNWrapper(str, i, index);
                 i = ret[0];
                 let v = ret[1];
 
@@ -319,7 +362,7 @@
                  assertToken(str, i, ':');
                  i++;
 
-                 ret = parseWithNaNWrapper(str, i);
+                 ret = parseWithNaNWrapper(str, i, k);
                  i = ret[0];
                  let v = ret[1];
 
